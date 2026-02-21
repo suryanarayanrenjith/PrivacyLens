@@ -319,14 +319,20 @@ export function useLLM() {
         setStatus('analyzing')
 
         const docAssessment = assessDocumentType(policyText, sourceUrl, analysisTarget)
+
+        // Dynamic analysis depth: shallow for irrelevant documents, deep for policies
+        const analysisDepth = docAssessment.isLikelyPolicyOrTos ? 'deep' as const : 'shallow' as const
+
         const heuristicResults = analyzeAllCategories(policyText, {
           analysisTarget,
           documentKind: docAssessment.kind,
+          analysisDepth,
         })
         const wc = wordCount(policyText)
         const initialReport = scoreHeuristicResults(heuristicResults, modelId, wc, {
           analysisTarget,
           documentAssessment: docAssessment,
+          analysisDepth,
         })
         if (sourceUrl) initialReport.sourceUrl = sourceUrl
 

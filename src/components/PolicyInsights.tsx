@@ -95,6 +95,38 @@ function statusLabel(s: 'pass' | 'warn' | 'fail'): string {
   return 'FAIL'
 }
 
+function getVaguenessLevel(score: number): { label: string; color: string } {
+  if (score <= 20) return { label: 'CRYSTAL CLEAR', color: '#00ff88' }
+  if (score <= 40) return { label: 'MOSTLY CLEAR', color: '#88ff00' }
+  if (score <= 60) return { label: 'SOMEWHAT VAGUE', color: '#ffcc00' }
+  if (score <= 80) return { label: 'HIGHLY VAGUE', color: '#ff8800' }
+  return { label: 'EXTREMELY EVASIVE', color: '#ff2244' }
+}
+
+function getCompletenessLevel(score: number): { label: string; color: string } {
+  if (score >= 75) return { label: 'COMPREHENSIVE', color: '#00ff88' }
+  if (score >= 50) return { label: 'ADEQUATE', color: '#88ff00' }
+  if (score >= 30) return { label: 'PARTIAL', color: '#ffcc00' }
+  return { label: 'INCOMPLETE', color: '#ff2244' }
+}
+
+function getReadabilityColor(grade: number): string {
+  if (grade <= 8) return '#00ff88'
+  if (grade <= 12) return '#88ff00'
+  if (grade <= 16) return '#ffcc00'
+  return '#ff2244'
+}
+
+function getReadabilityLabel(grade: number): string {
+  if (grade <= 6) return 'Easy (6th grade)'
+  if (grade <= 8) return 'Fairly Easy (8th grade)'
+  if (grade <= 10) return 'Standard (10th grade)'
+  if (grade <= 12) return 'Fairly Difficult (12th grade)'
+  if (grade <= 14) return 'Difficult (College)'
+  if (grade <= 16) return 'Very Difficult (College+)'
+  return 'Extremely Difficult (Graduate+)'
+}
+
 export function PolicyInsights({ report }: Props) {
   const cats = report.categories
   const risk = getRiskLevel(report.overallScore)
@@ -228,6 +260,167 @@ export function PolicyInsights({ report }: Props) {
         </div>
       </div>
 
+      {/* ── Ensemble Analysis Section (new advanced cards) ── */}
+      {report.analysisDepth === 'deep' && (
+        <>
+          {/* Section divider */}
+          <div class="flex items-center gap-3 animate-fade-in-up" style={{ animationDelay: '510ms' }}>
+            <div class="divider-neon flex-1" />
+            <h3 class="text-xs text-neon tracking-[0.3em] uppercase font-mono">
+              ensemble_analysis
+            </h3>
+            <div class="divider-neon flex-1" />
+          </div>
+
+          {/* Readability Ensemble */}
+          {report.readabilityDetails && (
+            <div class="cyber-card lift-on-hover p-4 animate-fade-in-up" style={{ animationDelay: '520ms' }}>
+              <div class="cyber-corners absolute inset-0 pointer-events-none" />
+              <div class="flex items-center gap-2 mb-3">
+                <span class="text-neon text-xs">{'>'}</span>
+                <span class="text-[10px] text-neutral-500 tracking-[0.2em] uppercase font-mono">readability_ensemble</span>
+                <span class="text-[9px] ml-auto font-bold tracking-wider font-mono" style={{ color: getReadabilityColor(report.readabilityDetails.averageGrade) }}>
+                  {getReadabilityLabel(report.readabilityDetails.averageGrade)}
+                </span>
+              </div>
+              <div class="text-center mb-3">
+                <div class="text-[9px] text-neutral-600 tracking-wider uppercase mb-1">ensemble_grade</div>
+                <div class="text-lg font-bold tracking-wider" style={{ color: getReadabilityColor(report.readabilityDetails.averageGrade) }}>
+                  {report.readabilityDetails.averageGrade}
+                </div>
+              </div>
+              <div class="space-y-2">
+                {([
+                  ['Flesch-Kincaid', report.readabilityDetails.fleschKincaid],
+                  ['Gunning Fog', report.readabilityDetails.gunningFog],
+                  ['Coleman-Liau', report.readabilityDetails.colemanLiau],
+                  ['Auto. Readability', report.readabilityDetails.ari],
+                  ['SMOG', report.readabilityDetails.smog],
+                ] as const).map(([label, value]) => {
+                  const barColor = getReadabilityColor(value)
+                  const barWidth = Math.min(100, Math.max(5, (value / 20) * 100))
+                  return (
+                    <div key={label}>
+                      <div class="flex items-center justify-between mb-0.5">
+                        <span class="text-[9px] text-neutral-600 tracking-wider font-mono">{label}</span>
+                        <span class="text-[9px] font-bold font-mono" style={{ color: barColor }}>{value}</span>
+                      </div>
+                      <div class="meter-track" style={{ height: '3px' }}>
+                        <div class="meter-fill bar-fill" style={{ width: `${barWidth}%`, background: barColor }} />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+              <p class="text-[8px] text-neutral-700 mt-2 font-mono">
+                5 readability indices averaged for robust scoring. Lower grade = easier to read.
+              </p>
+            </div>
+          )}
+
+          {/* Language Clarity + Policy Completeness + Originality */}
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3 animate-fade-in-up" style={{ animationDelay: '530ms' }}>
+            {/* Language Clarity (Vagueness) */}
+            {report.vagueLanguageScore !== undefined && (() => {
+              const vague = getVaguenessLevel(report.vagueLanguageScore)
+              return (
+                <div class="cyber-card lift-on-hover p-4">
+                  <div class="cyber-corners absolute inset-0 pointer-events-none" />
+                  <div class="text-[9px] text-neutral-600 tracking-wider uppercase mb-2 font-mono">language_clarity</div>
+                  <div class="text-xs font-bold tracking-wider" style={{ color: vague.color }}>{vague.label}</div>
+                  <div class="meter-track mt-2">
+                    <div
+                      class="meter-fill bar-fill"
+                      style={{ width: `${report.vagueLanguageScore}%`, background: vague.color }}
+                    />
+                  </div>
+                  <div class="text-[9px] text-neutral-600 mt-1 font-mono">
+                    Vagueness: {report.vagueLanguageScore}%
+                  </div>
+                  <p class="text-[8px] text-neutral-700 mt-1 font-mono">
+                    Measures hedge words, double negatives, and evasive phrasing
+                  </p>
+                </div>
+              )
+            })()}
+
+            {/* Policy Completeness */}
+            {report.completenessScore !== undefined && (() => {
+              const comp = getCompletenessLevel(report.completenessScore)
+              return (
+                <div class="cyber-card lift-on-hover p-4">
+                  <div class="cyber-corners absolute inset-0 pointer-events-none" />
+                  <div class="text-[9px] text-neutral-600 tracking-wider uppercase mb-2 font-mono">policy_completeness</div>
+                  <div class="text-xs font-bold tracking-wider" style={{ color: comp.color }}>{comp.label}</div>
+                  <div class="meter-track mt-2">
+                    <div
+                      class="meter-fill bar-fill"
+                      style={{ width: `${report.completenessScore}%`, background: comp.color }}
+                    />
+                  </div>
+                  <div class="text-[9px] text-neutral-600 mt-1 font-mono">
+                    Coverage: {report.completenessScore}%
+                  </div>
+                  <p class="text-[8px] text-neutral-700 mt-1 font-mono">
+                    Compared against GDPR Art. 13-14 disclosure requirements
+                  </p>
+                </div>
+              )
+            })()}
+
+            {/* Originality (Boilerplate) */}
+            {report.boilerplateScore !== undefined && (() => {
+              const uniqueness = 100 - report.boilerplateScore
+              const origColor = uniqueness >= 70 ? '#00ff88' : uniqueness >= 40 ? '#ffcc00' : '#ff2244'
+              return (
+                <div class="cyber-card lift-on-hover p-4">
+                  <div class="cyber-corners absolute inset-0 pointer-events-none" />
+                  <div class="text-[9px] text-neutral-600 tracking-wider uppercase mb-2 font-mono">originality_score</div>
+                  <div class="text-xs font-bold tracking-wider" style={{ color: origColor }}>
+                    {uniqueness >= 70 ? 'ORIGINAL' : uniqueness >= 40 ? 'MIXED' : 'TEMPLATE-HEAVY'}
+                  </div>
+                  <div class="meter-track mt-2">
+                    <div
+                      class="meter-fill bar-fill"
+                      style={{ width: `${uniqueness}%`, background: origColor }}
+                    />
+                  </div>
+                  <div class="text-[9px] text-neutral-600 mt-1 font-mono">
+                    Uniqueness: {uniqueness}% / Boilerplate: {report.boilerplateScore}%
+                  </div>
+                  <p class="text-[8px] text-neutral-700 mt-1 font-mono">
+                    How much custom language vs. copy-pasted template text
+                  </p>
+                </div>
+              )
+            })()}
+          </div>
+
+          {/* Sentiment Mismatches */}
+          {report.sentimentMismatches && report.sentimentMismatches.length > 0 && (
+            <div class="cyber-card lift-on-hover p-4 animate-fade-in-up" style={{ animationDelay: '540ms', borderColor: 'rgba(255, 136, 0, 0.2)' }}>
+              <div class="cyber-corners absolute inset-0 pointer-events-none" />
+              <div class="flex items-center gap-2 mb-3">
+                <span class="text-grade-d text-xs">[!]</span>
+                <span class="text-[10px] text-grade-d tracking-[0.2em] uppercase font-mono">sentiment_mismatch</span>
+                <span class="text-[9px] text-neutral-600 ml-auto font-mono">{report.sentimentMismatches.length} detected</span>
+              </div>
+              <p class="text-[9px] text-neutral-600 mb-2 font-mono">
+                Sentences that use positive framing to describe invasive data practices:
+              </p>
+              <div class="space-y-1.5">
+                {report.sentimentMismatches.slice(0, 4).map((sm, i) => (
+                  <div key={i} class="flex gap-2 text-[9px] font-mono">
+                    <span class="text-grade-d shrink-0">{'>'}</span>
+                    <span class="text-neutral-500 italic">"{sm}"</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
       {/* Threat vectors */}
       {(threats.length > 0 || report.llmThreatAssessment) && (
         <div class="cyber-card lift-on-hover p-4 animate-fade-in-up" style={{ animationDelay: '550ms', borderColor: 'rgba(255, 34, 68, 0.2)' }}>
@@ -342,6 +535,17 @@ export function PolicyInsights({ report }: Props) {
           <div class="text-[10px] font-mono">
             <span class="text-neutral-700">red_flags: </span>
             <span class={report.redFlags.length > 0 ? 'text-grade-f' : 'text-neutral-500'}>{report.redFlags.length}</span>
+          </div>
+          <div class="text-[10px] font-mono">
+            <span class="text-neutral-700">analysis_depth: </span>
+            <span class={report.analysisDepth === 'deep' ? 'text-neon-muted' : 'text-grade-d'}>
+              {report.analysisDepth ?? 'deep'}
+              {report.analysisDepth === 'shallow' && ' (non-policy document)'}
+            </span>
+          </div>
+          <div class="text-[10px] font-mono">
+            <span class="text-neutral-700">engine: </span>
+            <span class="text-neutral-500">Ensemble v3 (11 voters)</span>
           </div>
         </div>
       </div>

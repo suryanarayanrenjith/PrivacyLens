@@ -1,9 +1,11 @@
 import type {
   AnalysisTarget,
+  AnalysisDepth,
   CategoryKey,
   DocumentAssessment,
   ScoredCategory,
   AnalysisReport,
+  ReadabilityDetails,
 } from '../types/analysis'
 import type { HeuristicResult } from './heuristic-analyzer'
 import { detectInconsistencies } from './heuristic-analyzer'
@@ -81,6 +83,7 @@ interface ScoreOptions {
   llmSummary?: string
   analysisTarget?: AnalysisTarget
   documentAssessment?: DocumentAssessment
+  analysisDepth?: AnalysisDepth
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -136,16 +139,28 @@ export function scoreHeuristicResults(
     llmSummary,
     analysisTarget = 'auto',
     documentAssessment,
+    analysisDepth = 'deep',
   } = options
   const categories: ScoredCategory[] = []
   let weightedSum = 0
   const redFlags: string[] = []
 
-  // Aggregate new analysis dimensions across all categories
+  // Aggregate analysis dimensions across all categories
   const allRegulatorySignals = new Set<string>()
   const allDarkPatterns = new Set<string>()
+  const allSentimentMismatches = new Set<string>()
   let totalReadability = 0
   let readabilityCount = 0
+  let totalVagueScore = 0
+  let vagueCount = 0
+  let totalCompleteness = 0
+  let completenessCount = 0
+  let totalBoilerplate = 0
+  let boilerplateCount = 0
+
+  // Aggregate readability details for ensemble
+  let rdCount = 0
+  const rdTotals = { fleschKincaid: 0, gunningFog: 0, colemanLiau: 0, ari: 0, smog: 0, averageGrade: 0 }
 
   for (const key of CATEGORY_KEYS) {
     const result = heuristicResults[key]
@@ -167,7 +182,7 @@ export function scoreHeuristicResults(
       result,
     )
 
-    // Collect new dimension data
+    // Collect dimension data
     if (result.regulatorySignals) {
       for (const sig of result.regulatorySignals) allRegulatorySignals.add(sig)
     }
@@ -177,6 +192,30 @@ export function scoreHeuristicResults(
     if (result.readabilityGrade !== undefined) {
       totalReadability += result.readabilityGrade
       readabilityCount++
+    }
+    if (result.readabilityDetails) {
+      rdTotals.fleschKincaid += result.readabilityDetails.fleschKincaid
+      rdTotals.gunningFog += result.readabilityDetails.gunningFog
+      rdTotals.colemanLiau += result.readabilityDetails.colemanLiau
+      rdTotals.ari += result.readabilityDetails.ari
+      rdTotals.smog += result.readabilityDetails.smog
+      rdTotals.averageGrade += result.readabilityDetails.averageGrade
+      rdCount++
+    }
+    if (result.vagueLanguage) {
+      totalVagueScore += result.vagueLanguage.score
+      vagueCount++
+    }
+    if (result.completenessScore !== undefined) {
+      totalCompleteness += result.completenessScore
+      completenessCount++
+    }
+    if (result.boilerplateScore !== undefined) {
+      totalBoilerplate += result.boilerplateScore
+      boilerplateCount++
+    }
+    if (result.sentimentMismatches) {
+      for (const sm of result.sentimentMismatches) allSentimentMismatches.add(sm)
     }
 
     categories.push({
@@ -192,6 +231,11 @@ export function scoreHeuristicResults(
       regulatorySignals: result.regulatorySignals,
       darkPatterns: result.darkPatterns,
       readabilityGrade: result.readabilityGrade,
+      readabilityDetails: result.readabilityDetails,
+      vagueLanguage: result.vagueLanguage,
+      completenessScore: result.completenessScore,
+      boilerplateScore: result.boilerplateScore,
+      sentimentMismatches: result.sentimentMismatches,
     })
 
     if (score <= 45 || result.severity === 'critical') {
@@ -213,6 +257,26 @@ export function scoreHeuristicResults(
   // Add inconsistency red flags
   for (const inc of inconsistencies) {
     redFlags.push(inc)
+  }
+
+  // ── New advanced dimension red flags ──
+  const avgVague = vagueCount > 0 ? totalVagueScore / vagueCount : 0
+  if (avgVague > 70) {
+    redFlags.push('Extremely high vague language density detected — policy may be intentionally ambiguous.')
+  }
+
+  const avgCompleteness = completenessCount > 0 ? totalCompleteness / completenessCount : 50
+  if (avgCompleteness < 25) {
+    redFlags.push('Policy coverage is significantly below regulatory standards — many required disclosures appear missing.')
+  }
+
+  const avgBoilerplate = boilerplateCount > 0 ? totalBoilerplate / boilerplateCount : 0
+  if (avgBoilerplate > 75) {
+    redFlags.push('Policy consists largely of boilerplate template language with minimal customization.')
+  }
+
+  if (allSentimentMismatches.size >= 3) {
+    redFlags.push(`${allSentimentMismatches.size} instances of positive framing used to obscure invasive data practices.`)
   }
 
   const overallScore = Math.round(weightedSum)
@@ -246,13 +310,23 @@ export function scoreHeuristicResults(
     ? Math.round((totalReadability / readabilityCount) * 10) / 10
     : undefined
 
+  // Build aggregated readability details
+  const readabilityDetails: ReadabilityDetails | undefined = rdCount > 0 ? {
+    fleschKincaid: Math.round((rdTotals.fleschKincaid / rdCount) * 10) / 10,
+    gunningFog: Math.round((rdTotals.gunningFog / rdCount) * 10) / 10,
+    colemanLiau: Math.round((rdTotals.colemanLiau / rdCount) * 10) / 10,
+    ari: Math.round((rdTotals.ari / rdCount) * 10) / 10,
+    smog: Math.round((rdTotals.smog / rdCount) * 10) / 10,
+    averageGrade: Math.round((rdTotals.averageGrade / rdCount) * 10) / 10,
+  } : undefined
+
   return {
     categories,
     overallScore,
     overallGrade: scoreToGrade(overallScore),
-    redFlags: redFlags.slice(0, 7),
+    redFlags: redFlags.slice(0, 10),
     analyzedAt: new Date().toISOString(),
-    modelUsed: llmSummary ? modelUsed : 'Heuristic Analysis v2',
+    modelUsed: llmSummary ? modelUsed : 'Heuristic Analysis v3 (Ensemble)',
     policyWordCount,
     chunksAnalyzed: 1,
     analysisTarget,
@@ -265,5 +339,11 @@ export function scoreHeuristicResults(
     darkPatterns: [...allDarkPatterns],
     readabilityGrade: avgReadability,
     inconsistencies,
+    analysisDepth,
+    readabilityDetails,
+    vagueLanguageScore: vagueCount > 0 ? Math.round(avgVague) : undefined,
+    completenessScore: completenessCount > 0 ? Math.round(avgCompleteness) : undefined,
+    boilerplateScore: boilerplateCount > 0 ? Math.round(avgBoilerplate) : undefined,
+    sentimentMismatches: allSentimentMismatches.size > 0 ? [...allSentimentMismatches] : undefined,
   }
 }

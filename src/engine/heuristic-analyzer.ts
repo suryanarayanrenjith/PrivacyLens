@@ -1,8 +1,12 @@
 import type {
   AnalysisTarget,
+  AnalysisDepth,
   CategoryKey,
   DocumentAssessment,
   DocumentKind,
+  ReadabilityDetails,
+  VagueLanguageResult,
+  BoilerplateResult,
 } from '../types/analysis'
 
 // ─── Public Types ───────────────────────────────────────────────────────────
@@ -22,11 +26,22 @@ export interface HeuristicResult {
   darkPatterns?: string[]
   /** Flesch-Kincaid readability grade level (lower = easier to read) */
   readabilityGrade?: number
+  /** Multi-index readability ensemble details */
+  readabilityDetails?: ReadabilityDetails
+  /** Vague/misleading language analysis */
+  vagueLanguage?: VagueLanguageResult
+  /** Policy completeness score (0-100) via cosine similarity */
+  completenessScore?: number
+  /** Boilerplate/template language percentage (0-100) */
+  boilerplateScore?: number
+  /** Sentiment mismatch detections */
+  sentimentMismatches?: string[]
 }
 
 export interface AnalyzeAllOptions {
   analysisTarget?: AnalysisTarget
   documentKind?: DocumentKind
+  analysisDepth?: AnalysisDepth
 }
 
 // ─── Internal Types ─────────────────────────────────────────────────────────
@@ -611,6 +626,249 @@ function readabilityFactor(grade: number): number {
   return 0
 }
 
+// ─── Additional Readability Indices ──────────────────────────────────────
+//
+// Ensemble of readability formulas for more robust scoring.
+// Each formula has different biases; averaging produces stable results.
+
+function countComplexWords(text: string): number {
+  const words = text.split(/\s+/).filter(w => w.replace(/[^a-z]/gi, '').length > 0)
+  return words.filter(w => countSyllables(w) >= 3).length
+}
+
+function gunningFogIndex(text: string): number {
+  const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0)
+  const words = text.split(/\s+/).filter(w => w.replace(/[^a-z]/gi, '').length > 0)
+  if (sentences.length === 0 || words.length === 0) return 0
+  const complexWords = countComplexWords(text)
+  return 0.4 * (words.length / sentences.length + 100 * (complexWords / words.length))
+}
+
+function colemanLiauIndex(text: string): number {
+  const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0)
+  const words = text.split(/\s+/).filter(w => w.replace(/[^a-z]/gi, '').length > 0)
+  if (sentences.length === 0 || words.length === 0) return 0
+  const chars = words.reduce((sum, w) => sum + w.replace(/[^a-z]/gi, '').length, 0)
+  const L = (chars / words.length) * 100  // avg letters per 100 words
+  const S = (sentences.length / words.length) * 100  // avg sentences per 100 words
+  return 0.0588 * L - 0.296 * S - 15.8
+}
+
+function automatedReadabilityIndex(text: string): number {
+  const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0)
+  const words = text.split(/\s+/).filter(w => w.replace(/[^a-z]/gi, '').length > 0)
+  if (sentences.length === 0 || words.length === 0) return 0
+  const chars = words.reduce((sum, w) => sum + w.replace(/[^a-z]/gi, '').length, 0)
+  return 4.71 * (chars / words.length) + 0.5 * (words.length / sentences.length) - 21.43
+}
+
+function smogIndex(text: string): number {
+  const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0)
+  if (sentences.length === 0) return 0
+  const polysyllables = countComplexWords(text)
+  return 1.0430 * Math.sqrt(polysyllables * (30 / sentences.length)) + 3.1291
+}
+
+function readabilityEnsemble(text: string): ReadabilityDetails {
+  const fk = fleschKincaidGrade(text)
+  const fog = gunningFogIndex(text)
+  const cli = colemanLiauIndex(text)
+  const ari = automatedReadabilityIndex(text)
+  const sm = smogIndex(text)
+  // Average FK, Fog, CLI, ARI for the ensemble grade
+  const averageGrade = (fk + fog + cli + ari) / 4
+  return {
+    fleschKincaid: Math.round(fk * 10) / 10,
+    gunningFog: Math.round(fog * 10) / 10,
+    colemanLiau: Math.round(cli * 10) / 10,
+    ari: Math.round(ari * 10) / 10,
+    smog: Math.round(sm * 10) / 10,
+    averageGrade: Math.round(averageGrade * 10) / 10,
+  }
+}
+
+// ─── Vague & Misleading Language Detection ──────────────────────────────
+//
+// Based on ACL research on hedge detection and vagueness in privacy policies.
+// Detects weasel words, double negatives, scope expansion, passive evasion,
+// and responsibility-shifting language.
+
+const VAGUE_PATTERNS: { pattern: RegExp; label: string; weight: number }[] = [
+  { pattern: /\b(it is believed|some people|widely regarded|arguably|purportedly|supposedly|presumably)\b/i, label: 'Weasel words', weight: 1.0 },
+  { pattern: /\b(not\s+un\w+|cannot\s+deny|not\s+impossible|never\s+(?:not|without))\b/i, label: 'Double negatives', weight: 1.2 },
+  { pattern: /\b(including but not limited to|without limitation|among other things)\b/i, label: 'Scope expansion', weight: 0.8 },
+  { pattern: /\bsuch as\b.{0,30}\b(and more|and others?|etc\.?)\b/i, label: 'Open-ended list', weight: 0.7 },
+  { pattern: /\b(and\/or|and other)\b/i, label: 'Ambiguous conjunction', weight: 0.5 },
+  { pattern: /\bdata\s+(?:is|are|was|were|may be|might be)\s+(?:collected|shared|processed|used|transferred|stored)\b/i, label: 'Passive voice evasion', weight: 0.9 },
+  { pattern: /\b(?:you\s+(?:are|is)\s+(?:responsible|liable)|at\s+your\s+(?:own\s+)?risk|user\s+assumes?)\b/i, label: 'Responsibility shifting', weight: 1.1 },
+  { pattern: /\b(to the (?:fullest|maximum) extent (?:permitted|allowed))\b/i, label: 'Maximum legal shield', weight: 1.0 },
+  { pattern: /\b(as\s+(?:we|it)\s+(?:see|deem)\s+(?:fit|appropriate|necessary))\b/i, label: 'Discretionary language', weight: 1.0 },
+  { pattern: /\b(certain|various|numerous|applicable|relevant|appropriate)\b.{0,20}\b(data|information|circumstances|situations)\b/i, label: 'Vague quantifiers', weight: 0.6 },
+]
+
+function detectVagueLanguage(text: string): VagueLanguageResult {
+  const sentences = splitSentences(normalize(text))
+  const instances: string[] = []
+  let totalWeight = 0
+
+  for (const sentence of sentences) {
+    for (const rule of VAGUE_PATTERNS) {
+      if (rule.pattern.test(sentence)) {
+        totalWeight += rule.weight
+        if (instances.length < 8 && !instances.includes(rule.label)) {
+          instances.push(rule.label)
+        }
+      }
+    }
+  }
+
+  const density = sentences.length > 0 ? (totalWeight / sentences.length) * 100 : 0
+  // Score: 0-100 based on density and total instances
+  const score = Math.round(clamp(density * 3 + totalWeight * 2, 0, 100))
+
+  return { score, instances, density: Math.round(density * 10) / 10 }
+}
+
+// ─── Cosine Similarity & Policy Completeness ────────────────────────────
+//
+// Compares submitted document against a reference "ideal" privacy policy
+// term distribution derived from GDPR Art. 13-14 requirements.
+
+const REFERENCE_POLICY_TERMS = new Map<string, number>([
+  // Core privacy concepts
+  ['controller', 0.08], ['processor', 0.06], ['personal', 0.09], ['data', 0.10],
+  ['purpose', 0.07], ['legal', 0.05], ['basis', 0.05], ['consent', 0.08],
+  ['legitimate', 0.04], ['interest', 0.04], ['recipients', 0.06], ['transfer', 0.06],
+  ['retention', 0.07], ['period', 0.05], ['rights', 0.08], ['access', 0.06],
+  ['deletion', 0.07], ['erasure', 0.06], ['portability', 0.05], ['objection', 0.04],
+  ['withdraw', 0.05], ['complaint', 0.04], ['supervisory', 0.04], ['authority', 0.04],
+  ['automated', 0.05], ['decision', 0.04], ['profiling', 0.05], ['children', 0.05],
+  ['security', 0.07], ['encryption', 0.05], ['breach', 0.05], ['notification', 0.05],
+  ['cookies', 0.05], ['tracking', 0.04], ['third', 0.06], ['party', 0.06],
+  ['sharing', 0.05], ['disclosure', 0.05], ['collection', 0.07], ['processing', 0.06],
+  ['protection', 0.06], ['officer', 0.04], ['contact', 0.04], ['update', 0.03],
+  ['amendment', 0.03], ['notice', 0.04], ['policy', 0.06], ['privacy', 0.08],
+  ['minimize', 0.04], ['anonymize', 0.04], ['pseudonymize', 0.03],
+])
+
+function cosineSimilarity(vecA: Map<string, number>, vecB: Map<string, number>): number {
+  let dotProduct = 0
+  let normA = 0
+  let normB = 0
+
+  for (const [term, valA] of vecA) {
+    const valB = vecB.get(term) ?? 0
+    dotProduct += valA * valB
+    normA += valA * valA
+  }
+  for (const [, valB] of vecB) normB += valB * valB
+
+  const denominator = Math.sqrt(normA) * Math.sqrt(normB)
+  return denominator > 0 ? dotProduct / denominator : 0
+}
+
+function computeCompletenessScore(text: string): number {
+  const words = text.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2)
+  const totalWords = words.length || 1
+  const termCounts = new Map<string, number>()
+
+  for (const word of words) {
+    termCounts.set(word, (termCounts.get(word) ?? 0) + 1)
+  }
+
+  // Build TF vector for the document (only for terms in reference)
+  const docVector = new Map<string, number>()
+  for (const [term] of REFERENCE_POLICY_TERMS) {
+    const count = termCounts.get(term) ?? 0
+    docVector.set(term, count / totalWords)
+  }
+
+  const similarity = cosineSimilarity(docVector, REFERENCE_POLICY_TERMS)
+  return Math.round(clamp(similarity * 100, 0, 100))
+}
+
+// ─── N-gram Boilerplate Detection ───────────────────────────────────────
+//
+// Detects template/boilerplate language using bigram and trigram matching.
+
+const BOILERPLATE_NGRAMS = new Set([
+  'we may collect', 'we may use', 'we may share', 'we may disclose',
+  'from time to', 'time to time', 'at our sole', 'our sole discretion',
+  'sole discretion we', 'to the fullest', 'the fullest extent',
+  'fullest extent permitted', 'extent permitted by', 'permitted by law',
+  'by using this', 'using this service', 'this service you',
+  'service you agree', 'you agree to', 'we reserve the',
+  'reserve the right', 'the right to', 'right to change',
+  'without prior notice', 'at any time', 'in our discretion',
+  'we will not', 'we do not', 'your continued use',
+  'continued use of', 'use of the', 'of the service',
+  'as described in', 'described in this', 'in this policy',
+  'this privacy policy', 'personal information we', 'information we collect',
+  'we collect from', 'how we use', 'how we share',
+  'we use your', 'use your personal', 'your personal information',
+  'third party services', 'party services that', 'may contain links',
+  'not responsible for', 'responsible for the', 'for the privacy',
+  'subject to the', 'to the terms', 'terms and conditions',
+  'in accordance with', 'accordance with applicable', 'with applicable law',
+  'please contact us', 'contact us at', 'if you have',
+  'you have any', 'have any questions',
+])
+
+function extractNgrams(text: string, n: number): string[] {
+  const words = text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 0)
+  const ngrams: string[] = []
+  for (let i = 0; i <= words.length - n; i++) {
+    ngrams.push(words.slice(i, i + n).join(' '))
+  }
+  return ngrams
+}
+
+function computeBoilerplateScore(text: string): BoilerplateResult {
+  const trigrams = extractNgrams(text, 3)
+  if (trigrams.length === 0) return { score: 0, uniqueness: 100, matches: [] }
+
+  const matchedSet = new Set<string>()
+  let matchCount = 0
+
+  for (const ngram of trigrams) {
+    if (BOILERPLATE_NGRAMS.has(ngram)) {
+      matchCount++
+      if (matchedSet.size < 6) matchedSet.add(ngram)
+    }
+  }
+
+  const score = Math.round(clamp((matchCount / trigrams.length) * 100 * 8, 0, 100))
+  const uniqueness = 100 - score
+
+  return { score, uniqueness, matches: [...matchedSet] }
+}
+
+// ─── Sentiment Polarity Detection ───────────────────────────────────────
+//
+// Detects positive framing of negative data practices — a subtle dark pattern.
+
+const POSITIVE_FRAMERS = /\b(to improve your experience|to better serve you|to enhance our services?|for your convenience|to personalize|to provide you with|to help us|for your benefit|to protect you|to ensure quality)\b/i
+const NEGATIVE_PRACTICES = /\b(collect|share|sell|track|monitor|profile|disclose|transfer|retain|store|process|gather|record|log|access)\b/i
+
+function detectSentimentMismatch(text: string): string[] {
+  const sentences = splitSentences(normalize(text))
+  const mismatches: string[] = []
+
+  for (const sentence of sentences) {
+    const hasPositive = POSITIVE_FRAMERS.test(sentence)
+    const hasNegative = NEGATIVE_PRACTICES.test(sentence)
+
+    if (hasPositive && hasNegative) {
+      const truncated = sentence.length > 120 ? sentence.slice(0, 117) + '...' : sentence
+      if (mismatches.length < 5) {
+        mismatches.push(truncated)
+      }
+    }
+  }
+
+  return mismatches
+}
+
 // ─── Utility Functions ──────────────────────────────────────────────────────
 
 function clamp(value: number, min: number, max: number): number {
@@ -646,16 +904,28 @@ function severityFromScore(score: number): SeverityLevel {
 //
 // Enhanced scoring with Bayesian confidence adjustment and multi-signal fusion.
 
-function scoreFromEvidence(
-  riskPoints: number,
-  safeguardPoints: number,
-  riskSignals: number,
-  safeguardSignals: number,
-  profile: DocumentKind,
-  readabilityGrade: number,
-  regulatoryCount: number,
-  darkPatternCount: number,
-): number {
+interface ScoringParams {
+  riskPoints: number
+  safeguardPoints: number
+  riskSignals: number
+  safeguardSignals: number
+  profile: DocumentKind
+  readabilityGrade: number
+  regulatoryCount: number
+  darkPatternCount: number
+  vagueScore: number
+  completenessScore: number
+  boilerplateScore: number
+  sentimentMismatches: number
+}
+
+function scoreFromEvidence(params: ScoringParams): number {
+  const {
+    riskPoints, safeguardPoints, riskSignals, safeguardSignals,
+    profile, readabilityGrade, regulatoryCount, darkPatternCount,
+    vagueScore, completenessScore, boilerplateScore, sentimentMismatches,
+  } = params
+
   // Base score depends on document type
   let score = profile === 'tos' ? 66 : 72
 
@@ -681,6 +951,21 @@ function scoreFromEvidence(
 
   // Dark pattern penalty: each detected pattern reduces trust
   score -= Math.min(6, darkPatternCount * 1.2)
+
+  // ── Ensemble Voters (new advanced scoring dimensions) ──
+
+  // Vagueness penalty: vague language undermines trust
+  score -= Math.min(4, vagueScore / 25)
+
+  // Completeness bonus/penalty: comprehensive policies score higher
+  if (completenessScore > 70) score += 2
+  else if (completenessScore < 30) score -= 2
+
+  // Boilerplate penalty: template language = low effort
+  if (boilerplateScore > 60) score -= 1.5
+
+  // Sentiment mismatch penalty: positive framing of negative practices
+  score -= Math.min(3, sentimentMismatches * 0.6)
 
   return Math.round(clamp(score, 5, 95))
 }
@@ -974,11 +1259,97 @@ export function assessDocumentType(
 
 // ─── Core Category Analysis ─────────────────────────────────────────────────
 
+/**
+ * Shallow analysis: basic keyword presence only, no advanced algorithms.
+ * Used for documents that are not likely privacy policies or ToS.
+ */
+function analyzeCategoryShallow(
+  text: string,
+  category: CategoryKey,
+  options: AnalyzeAllOptions = {},
+): HeuristicResult {
+  const analysisTarget = options.analysisTarget ?? 'auto'
+  const documentKind = options.documentKind ?? 'unknown'
+  const normalized = normalize(text)
+  const rules = BASE_RULES[category]
+  const evidence = new Map<string, RuleEvidence>()
+
+  let riskPoints = 0
+  let safeguardPoints = 0
+  let riskSignals = 0
+  let safeguardSignals = 0
+
+  // Simple pattern matching without context windows or TF-IDF
+  for (const rule of rules) {
+    if (!rule.pattern.test(normalized)) continue
+    const adjusted = rule.weight * 0.5  // Reduce weight for shallow analysis
+    if (rule.signal === 'risk') {
+      riskPoints += adjusted
+      riskSignals += 1
+    } else {
+      safeguardPoints += adjusted
+      safeguardSignals += 1
+    }
+    addEvidence(evidence, {
+      finding: rule.finding,
+      signal: rule.signal,
+      score: adjusted,
+      quote: '',
+    })
+  }
+
+  // Coverage check only
+  const coverage = COVERAGE[category]
+  const hasCoverage = coverage.keywords.some((pattern) => pattern.test(normalized))
+  if (!hasCoverage) {
+    const penalty = coverage.penalty * docCoverageFactor(category, analysisTarget, documentKind)
+    riskPoints += penalty
+    riskSignals += 1
+    addEvidence(evidence, {
+      finding: coverage.finding,
+      signal: 'risk',
+      score: penalty,
+      quote: '',
+    })
+  }
+
+  const score = scoreFromEvidence({
+    riskPoints, safeguardPoints, riskSignals, safeguardSignals,
+    profile: documentKind, readabilityGrade: 10,
+    regulatoryCount: 0, darkPatternCount: 0,
+    vagueScore: 0, completenessScore: 50,
+    boilerplateScore: 0, sentimentMismatches: 0,
+  })
+
+  const ranked = [...evidence.values()].sort((a, b) => b.score - a.score)
+  const findings = ranked.map(x => x.finding).filter((x, i, arr) => arr.indexOf(x) === i).slice(0, 3)
+
+  return {
+    severity: severityFromScore(score),
+    findings: findings.length > 0 ? findings : ['Document does not appear to be a privacy policy — shallow analysis performed'],
+    quote: '',
+    score,
+    riskSignals,
+    safeguardSignals,
+    confidence: 15,
+    insights: ['Shallow analysis: document does not appear to be a privacy policy or terms of service.'],
+  }
+}
+
+/**
+ * Deep analysis: full pipeline with all advanced algorithms.
+ * Used for confirmed privacy policies and terms of service.
+ */
 export function analyzeCategory(
   text: string,
   category: CategoryKey,
   options: AnalyzeAllOptions = {},
 ): HeuristicResult {
+  // Route to shallow analysis if depth is set to shallow
+  if (options.analysisDepth === 'shallow') {
+    return analyzeCategoryShallow(text, category, options)
+  }
+
   const analysisTarget = options.analysisTarget ?? 'auto'
   const documentKind = options.documentKind ?? 'unknown'
   const normalized = normalize(text)
@@ -991,12 +1362,19 @@ export function analyzeCategory(
   // Build TF-IDF index for relevance weighting
   const tfidfIndex = buildTfIdf(normalized)
 
-  // Compute readability
-  const readabilityGrade = fleschKincaidGrade(normalized)
+  // ── Multi-Index Readability Ensemble ──
+  const readability = readabilityEnsemble(normalized)
+  const readabilityGrade = readability.averageGrade
 
   // Detect regulatory signals and dark patterns
   const regulatoryMatches = detectRegulatorySignals(normalized)
   const darkPatternMatches = detectDarkPatterns(normalized)
+
+  // ── New Advanced Analysis Passes ──
+  const vagueResult = detectVagueLanguage(normalized)
+  const completeness = computeCompletenessScore(normalized)
+  const boilerplate = computeBoilerplateScore(normalized)
+  const sentimentMismatches = detectSentimentMismatch(normalized)
 
   let riskPoints = 0
   let safeguardPoints = 0
@@ -1073,19 +1451,60 @@ export function analyzeCategory(
     })
   }
 
-  const avgTfidfStrength = tfidfCount > 0 ? totalTfidfStrength / tfidfCount : 1.0
-  const wordCount = normalized.split(/\s+/).length
+  // Add findings from new advanced detectors
+  if (vagueResult.score >= 40) {
+    addEvidence(evidence, {
+      finding: `High vague language density detected (${vagueResult.instances.slice(0, 3).join(', ')})`,
+      signal: 'risk',
+      score: vagueResult.score / 30,
+      quote: '',
+    })
+  }
 
-  const score = scoreFromEvidence(
+  if (boilerplate.score >= 50) {
+    addEvidence(evidence, {
+      finding: 'Policy appears largely template-based with limited customization',
+      signal: 'risk',
+      score: boilerplate.score / 40,
+      quote: '',
+    })
+  }
+
+  if (sentimentMismatches.length >= 2) {
+    addEvidence(evidence, {
+      finding: `Uses positive language to frame ${sentimentMismatches.length} invasive data practices`,
+      signal: 'risk',
+      score: sentimentMismatches.length * 0.5,
+      quote: sentimentMismatches[0] ?? '',
+    })
+  }
+
+  if (completeness >= 75) {
+    addEvidence(evidence, {
+      finding: 'Policy demonstrates comprehensive coverage of privacy topics',
+      signal: 'safeguard',
+      score: 1.5,
+      quote: '',
+    })
+  }
+
+  const avgTfidfStrength = tfidfCount > 0 ? totalTfidfStrength / tfidfCount : 1.0
+  const wc = normalized.split(/\s+/).length
+
+  const score = scoreFromEvidence({
     riskPoints,
     safeguardPoints,
     riskSignals,
     safeguardSignals,
-    documentKind,
+    profile: documentKind,
     readabilityGrade,
-    regulatoryMatches.length,
-    darkPatternMatches.length,
-  )
+    regulatoryCount: regulatoryMatches.length,
+    darkPatternCount: darkPatternMatches.length,
+    vagueScore: vagueResult.score,
+    completenessScore: completeness,
+    boilerplateScore: boilerplate.score,
+    sentimentMismatches: sentimentMismatches.length,
+  })
   const severity = severityFromScore(score)
 
   const ranked = [...evidence.values()].sort((a, b) => {
@@ -1109,7 +1528,7 @@ export function analyzeCategory(
     missingCoverage,
     avgTfidfStrength - 1.0,
     regulatoryMatches.length,
-    wordCount,
+    wc,
   )
 
   const topRisk = ranked.find((x) => x.signal === 'risk')?.finding
@@ -1141,6 +1560,11 @@ export function analyzeCategory(
     regulatorySignals,
     darkPatterns,
     readabilityGrade: Math.round(readabilityGrade * 10) / 10,
+    readabilityDetails: readability,
+    vagueLanguage: vagueResult,
+    completenessScore: completeness,
+    boilerplateScore: boilerplate.score,
+    sentimentMismatches,
   }
 }
 

@@ -18,6 +18,28 @@ export type CategoryKey = keyof LLMResponse
 
 export type AnalysisTarget = 'privacy_policy' | 'tos' | 'auto'
 export type DocumentKind = 'privacy_policy' | 'tos' | 'mixed' | 'unknown'
+export type AnalysisDepth = 'shallow' | 'deep'
+
+export interface ReadabilityDetails {
+  fleschKincaid: number
+  gunningFog: number
+  colemanLiau: number
+  ari: number
+  smog: number
+  averageGrade: number
+}
+
+export interface VagueLanguageResult {
+  score: number
+  instances: string[]
+  density: number
+}
+
+export interface BoilerplateResult {
+  score: number
+  uniqueness: number
+  matches: string[]
+}
 
 export interface DocumentAssessment {
   kind: DocumentKind
@@ -41,6 +63,11 @@ export interface ScoredCategory {
   regulatorySignals?: string[]
   darkPatterns?: string[]
   readabilityGrade?: number
+  readabilityDetails?: ReadabilityDetails
+  vagueLanguage?: VagueLanguageResult
+  completenessScore?: number
+  boilerplateScore?: number
+  sentimentMismatches?: string[]
 }
 
 export interface AnalysisReport {
@@ -80,6 +107,18 @@ export interface AnalysisReport {
   llmComplianceNotes?: string
   /** AI-generated actionable recommendations */
   llmRecommendations?: string[]
+  /** Whether shallow or deep analysis was performed */
+  analysisDepth?: AnalysisDepth
+  /** Multi-index readability ensemble details */
+  readabilityDetails?: ReadabilityDetails
+  /** Aggregated vague language score (0-100) */
+  vagueLanguageScore?: number
+  /** Policy completeness score via cosine similarity (0-100) */
+  completenessScore?: number
+  /** Boilerplate/template language percentage (0-100) */
+  boilerplateScore?: number
+  /** Sentiment mismatch detections */
+  sentimentMismatches?: string[]
 }
 
 export type AppStatus =
