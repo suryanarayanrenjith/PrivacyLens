@@ -222,4 +222,4 @@ docker run -p 8080:80 privacylens
 
 ## License
 
-[MIT]()
+[MIT](https://github.com/suryanarayanrenjith/PrivacyLens/blob/master/LICENSE)
