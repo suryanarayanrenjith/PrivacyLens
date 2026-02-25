@@ -210,6 +210,11 @@ async function handlePolicyProxy(
     return
   }
 
+  if (targetParam.length > 2048) {
+    sendJson(res, 400, { error: 'URL exceeds maximum length (2048 characters).' })
+    return
+  }
+
   let targetUrl: URL
   try {
     targetUrl = new URL(targetParam)
@@ -227,6 +232,11 @@ async function handlePolicyProxy(
     sendJson(res, 403, { error: 'Target host is not allowed.' })
     return
   }
+
+  // Set security headers on all proxy responses
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('X-Frame-Options', 'DENY')
+  res.setHeader('Referrer-Policy', 'no-referrer')
 
   try {
     const { html, fetchedFrom } = await tryFetchHtml(req, targetUrl)
@@ -270,6 +280,15 @@ export default defineConfig({
   base: '/',
   build: {
     target: 'esnext',
+    sourcemap: false,
+    chunkSizeWarningLimit: 6000,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'web-llm': ['@mlc-ai/web-llm'],
+        },
+      },
+    },
   },
   worker: {
     format: 'es',

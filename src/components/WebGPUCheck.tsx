@@ -4,7 +4,7 @@ import { checkWebGPUSupport } from '../utils/webgpu-detect'
 
 interface Props {
   children: ComponentChildren
-  onUnsupported: () => void
+  onUnsupported?: () => void
 }
 
 export function WebGPUCheck({ children, onUnsupported }: Props) {
@@ -14,15 +14,21 @@ export function WebGPUCheck({ children, onUnsupported }: Props) {
   const [reason, setReason] = useState('')
 
   useEffect(() => {
-    checkWebGPUSupport().then((result) => {
-      if (result.supported) {
-        setState('supported')
-      } else {
-        setReason(result.reason ?? 'WebGPU is not supported.')
+    checkWebGPUSupport()
+      .then((result) => {
+        if (result.supported) {
+          setState('supported')
+        } else {
+          setReason(result.reason ?? 'WebGPU is not supported.')
+          setState('unsupported')
+          onUnsupported?.()
+        }
+      })
+      .catch(() => {
+        setReason('Failed to check WebGPU support.')
         setState('unsupported')
-        onUnsupported()
-      }
-    })
+        onUnsupported?.()
+      })
   }, [onUnsupported])
 
   if (state === 'checking') {

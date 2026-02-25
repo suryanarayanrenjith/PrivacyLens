@@ -108,8 +108,8 @@ function hydrateSummaryCacheFromStorage(): void {
         summaryCache.set(entry[0], entry[1] as LLMAnalysisResult)
       }
     }
-  } catch {
-    // Ignore storage hydration issues silently.
+  } catch (err) {
+    console.warn('[PrivacyLens] Failed to hydrate summary cache from storage:', err)
   }
 }
 
@@ -117,8 +117,8 @@ function persistSummaryCacheToStorage(): void {
   try {
     const entries = [...summaryCache.entries()].slice(-SUMMARY_STORAGE_LIMIT)
     localStorage.setItem(SUMMARY_STORAGE_KEY, JSON.stringify(entries))
-  } catch {
-    // Ignore localStorage write failures silently.
+  } catch (err) {
+    console.warn('[PrivacyLens] Failed to persist summary cache:', err)
   }
 }
 
@@ -505,7 +505,8 @@ export function useLLM() {
 
           setStatus('done')
         } catch (llmErr: unknown) {
-          // ── LLM failed: show error to user instead of silently swallowing ──
+          // ── LLM failed: log and show error to user ──
+          console.error('[PrivacyLens] LLM refinement failed:', llmErr)
           if (!isRunActive(runId)) return
 
           const llmErrorMsg =
@@ -521,6 +522,7 @@ export function useLLM() {
           setStatus('done')
         }
       } catch (err: unknown) {
+        console.error('[PrivacyLens] Analysis failed:', err)
         if (!isRunActive(runId)) return
         const message =
           err instanceof Error ? err.message : 'Analysis failed'

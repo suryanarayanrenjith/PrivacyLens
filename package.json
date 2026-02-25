@@ -1,12 +1,14 @@
 {
   "name": "privacylens",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "AI-powered privacy policy & terms of service analyzer that runs entirely in your browser",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "type-check": "tsc -b --noEmit"
   },
   "dependencies": {
     "@mlc-ai/web-llm": "^0.2.81",

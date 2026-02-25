@@ -317,22 +317,6 @@ export async function generateQuickOverview(
   return parseAnalysisResponse(content, Object.keys(categoryData) as CategoryKey[])
 }
 
-// ─── Legacy generateSummary (kept for backward compatibility) ─────────────
-
-export async function generateSummary(
-  keywordContext: string,
-  categorySummaries: Record<CategoryKey, string>,
-): Promise<string> {
-  const result = await generateAnalysis(
-    keywordContext,
-    categorySummaries,
-    [],
-    0,
-    '',
-  )
-  return result.overallSummary || 'Analysis complete.'
-}
-
 export function disposeEngine(): void {
   engineInitPromise = null
   initializingModelId = null

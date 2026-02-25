@@ -1,3 +1,9 @@
+interface NavigatorWithGPU {
+  gpu?: {
+    requestAdapter(options?: Record<string, unknown>): Promise<unknown>
+  }
+}
+
 export async function checkWebGPUSupport(): Promise<{
   supported: boolean
   reason?: string
@@ -11,8 +17,13 @@ export async function checkWebGPUSupport(): Promise<{
   }
 
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const gpu = (navigator as any).gpu
+    const gpu = (navigator as NavigatorWithGPU).gpu
+    if (!gpu) {
+      return {
+        supported: false,
+        reason: 'WebGPU API is present but not accessible.',
+      }
+    }
     // Pass empty options (no powerPreference) to avoid Chrome warning on Windows
     const adapter = await gpu.requestAdapter({})
     if (!adapter) {

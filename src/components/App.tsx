@@ -24,8 +24,6 @@ export function App() {
   } = useLLM()
   const { sharedReport, copyShareUrl } = useShare()
 
-  const handleUnsupported = useCallback(() => {}, [])
-
   const activeReport = sharedReport ?? report
 
   const handleAnalyzeUrl = useCallback(
@@ -89,7 +87,7 @@ export function App() {
             />
           </div>
         ) : (
-          <WebGPUCheck onUnsupported={handleUnsupported}>
+          <WebGPUCheck>
             {status === 'idle' && !showReport && (
               <div class="section-enter">
                 <PolicyInput

@@ -20,10 +20,20 @@ async function readProxyError(resp: Response): Promise<string> {
 }
 
 export async function fetchPolicyFromUrl(url: string): Promise<string> {
-  // Normalize URL
+  // Normalize and validate URL
   let normalizedUrl = url.trim()
   if (!/^https?:\/\//i.test(normalizedUrl)) {
     normalizedUrl = 'https://' + normalizedUrl
+  }
+
+  try {
+    new URL(normalizedUrl)
+  } catch {
+    throw new Error('Invalid URL. Please enter a valid web address.')
+  }
+
+  if (normalizedUrl.length > 2048) {
+    throw new Error('URL is too long. Please use a shorter URL.')
   }
 
   let html = ''
